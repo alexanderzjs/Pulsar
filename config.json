@@ -1,0 +1,26 @@
+{
+  "auth": {
+    "scheme":   "password",
+    "username": "admin",
+    "password": "pulsar"
+  },
+  "capture_backend":  "synthetic",
+  "encoder_backend":  "auto",
+  "bitrate_kbps":     8000,
+  "fps":              30,
+  "audio_enabled":    true,
+  "queue_capacity":   4,
+  "idle_fps":         5,
+  "protocols": {
+    "rtp":    { "enabled": true,  "port": 47984 },
+    "webrtc": { "enabled": false, "port": 47985 },
+    "quic":   { "enabled": false, "port": 47987 },
+    "rdp":    { "enabled": true,  "port": 3389  },
+    "vnc":    { "enabled": true,  "port": 5900  }
+  },
+  "scheme":           "password",
+  "username":         "admin",
+  "password":         "pulsar",
+  "rtp_enabled":      true,
+  "rtp_port":         47984
+}

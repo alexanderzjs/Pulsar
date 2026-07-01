@@ -1,0 +1,45 @@
+# Build directories
+build/
+build-*/
+out/
+bin/
+obj/
+Debug/
+Release/
+RelWithDebInfo/
+MinSizeRel/
+
+# CMake generated files
+CMakeCache.txt
+CMakeFiles/
+CMakeScripts/
+Testing/
+Makefile
+cmake_install.cmake
+install_manifest.txt
+compile_commands.json
+
+# IDE / Editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# CMake user settings
+CMakeSettings.json
+CMakeUserPresets.json
+.cache/
+
+# Compilation artifacts
+*.ilk
+*.i
+*.ii
+*.d
+
+# Package files
+*.tar.gz
+*.zip
+
+.pulsar_profile_cache.json

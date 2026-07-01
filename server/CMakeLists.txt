@@ -1,0 +1,35 @@
+add_executable(pulsar_server
+    src/main.cpp
+    src/factory.cpp
+    src/config_parser.cpp
+    src/profiler.cpp
+)
+
+target_include_directories(pulsar_server
+    PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+)
+
+target_link_libraries(pulsar_server
+    PRIVATE
+        pulsar_core
+        capture_pipewire
+        capture_drm_virtual
+        preprocessor_cpu
+        preprocessor_dmabuf
+        preprocessor_gpu
+        encoder_nvenc
+        encoder_vaapi
+        encoder_x264
+        encoder_rdp
+        encoder_vnc
+        transport_rtp
+        transport_quic
+        transport_webrtc
+        transport_rdp
+        transport_vnc
+        input_uinput
+        audio_capture_pipewire
+        audio_encoder_opus
+        auth_password
+)
