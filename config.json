@@ -4,7 +4,7 @@
     "username": "admin",
     "password": "pulsar"
   },
-  "capture_backend":  "synthetic",
+  "capture_backend":  "pipewire",
   "encoder_backend":  "auto",
   "bitrate_kbps":     8000,
   "fps":              30,
@@ -15,7 +15,7 @@
     "rtp":    { "enabled": true,  "port": 47984 },
     "webrtc": { "enabled": false, "port": 47985 },
     "quic":   { "enabled": false, "port": 47987 },
-    "rdp":    { "enabled": true,  "port": 3389  },
+    "rdp":    { "enabled": true,  "port": 3390  },
     "vnc":    { "enabled": true,  "port": 5900  }
   },
   "scheme":           "password",

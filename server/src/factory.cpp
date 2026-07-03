@@ -365,12 +365,23 @@ static int run_rdp_session(const ServerConfig& cfg, StdoutLogger& logger,
         input.inject(ev);
     });
 
+    // Session-local stop flag — reconnect timeout ends only this session.
+    std::atomic<bool> session_stop{false};
+    std::thread stop_watcher([&] {
+        while (!stop.load() && !session_stop.load())
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        session_stop.store(true);
+    });
+
     pulsar::core::run_pipeline(
         capture_rdp, nullptr, rdp_encoder,
         rdp_transport, input,
         nullptr, nullptr,
-        pipe_cfg, &logger, nullptr, &stop,
+        pipe_cfg, &logger, nullptr, &session_stop,
         nullptr, nullptr);
+
+    session_stop.store(true);
+    stop_watcher.join();
 
     logger.log(pulsar::core::LogLevel::Info, "rdp: session ended");
     return 0;
@@ -426,12 +437,25 @@ static int run_vnc_session(const ServerConfig& cfg, StdoutLogger& logger,
         input.inject(ev);
     });
 
+    // Use a session-local stop flag so reconnect timeout ends this session
+    // only — it does NOT set the global g_stop and shut down the server.
+    std::atomic<bool> session_stop{false};
+    // Propagate server shutdown → session stop.
+    std::thread stop_watcher([&] {
+        while (!stop.load() && !session_stop.load())
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        session_stop.store(true);
+    });
+
     pulsar::core::run_pipeline(
         capture_vnc, nullptr, vnc_encoder,
         vnc_transport, input,
         nullptr, nullptr,
-        pipe_cfg, &logger, nullptr, &stop,
+        pipe_cfg, &logger, nullptr, &session_stop,
         nullptr, nullptr);
+
+    session_stop.store(true);
+    stop_watcher.join();
 
     logger.log(pulsar::core::LogLevel::Info, "vnc: session ended");
     return 0;
@@ -505,17 +529,25 @@ int run_server(const ServerConfig& cfg) {
     //   ffplay -protocol_whitelist file,rtp,udp -i stream.sdp
 
     // ── Accept loop ───────────────────────────────────────────────────────
-    // RTP runs on the main thread; RDP and VNC (if enabled) run in background
-    // threads and handle one session each before the process exits.
+    // RTP runs on the main thread; RDP and VNC run in background threads and
+    // loop — re-listening after each session ends or timeout.
     std::thread rdp_th, vnc_th;
     if (cfg.protocols.rdp.enabled) {
         rdp_th = std::thread([&] {
-            run_rdp_session(cfg, logger, g_stop);
+            while (!g_stop.load()) {
+                run_rdp_session(cfg, logger, g_stop);
+                if (!g_stop.load())
+                    std::this_thread::sleep_for(std::chrono::seconds(2));
+            }
         });
     }
     if (cfg.protocols.vnc.enabled) {
         vnc_th = std::thread([&] {
-            run_vnc_session(cfg, logger, g_stop);
+            while (!g_stop.load()) {
+                run_vnc_session(cfg, logger, g_stop);
+                if (!g_stop.load())
+                    std::this_thread::sleep_for(std::chrono::seconds(2));
+            }
         });
     }
 
