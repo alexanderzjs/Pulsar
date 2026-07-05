@@ -43,3 +43,4 @@ CMakeUserPresets.json
 *.zip
 
 .pulsar_profile_cache.json
+recordings/
