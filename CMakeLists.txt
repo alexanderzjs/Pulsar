@@ -17,7 +17,6 @@ if (UNIX AND NOT APPLE)
     pkg_check_modules(PIPEWIRE REQUIRED IMPORTED_TARGET libpipewire-0.3)
     pkg_check_modules(VAAPI    REQUIRED IMPORTED_TARGET libva libva-drm libdrm)
 
-    add_subdirectory(video/capture/linux/pipewire)
     add_subdirectory(video/capture/linux/drm_virtual)
     add_subdirectory(video/preprocessor/linux/dmabuf)
     add_subdirectory(video/preprocessor/linux/gpu)
@@ -33,10 +32,6 @@ endif()
 
 add_subdirectory(video/preprocessor/all/cpu)
 add_subdirectory(video/encoder/x264/all)
-add_subdirectory(video/encoder/rdp/all)
-add_subdirectory(video/encoder/vnc/all)
-add_subdirectory(transport/rdp/all)
-add_subdirectory(transport/vnc/all)
 add_subdirectory(auth/all/password)
 
 # ── server entry point ────────────────────────────────────────────────────────

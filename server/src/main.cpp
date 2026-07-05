@@ -1,6 +1,7 @@
 #include "config_parser.h"
 #include "factory.h"
 
+#include <fstream>
 #include <iostream>
 #include <string>
 
@@ -27,7 +28,17 @@ int main(int argc, char* argv[]) {
         }
         cfg = *loaded;
     } else {
-        cfg = pulsar::server::default_config();
+        // Prefer workspace config.json when present so protocol settings
+        // (for example enabling RDP/VNC) apply without extra CLI args.
+        std::string err;
+        auto loaded = pulsar::server::load_config("config.json", err);
+        if (loaded) {
+            cfg = *loaded;
+        } else {
+            cfg = pulsar::server::default_config();
+            std::cerr << "[warn] config: " << err
+                      << " ; falling back to built-in defaults\n";
+        }
     }
 
     if (verify) {

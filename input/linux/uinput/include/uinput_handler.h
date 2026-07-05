@@ -22,6 +22,9 @@ public:
 private:
     int    fd_              = -1;
     size_t injected_events_ = 0;
+    int    last_abs_x_      = 0;
+    int    last_abs_y_      = 0;
+    bool   has_abs_pointer_ = false;
     std::function<void(pulsar::core::HapticCommand)> haptic_cb_;
 };
 

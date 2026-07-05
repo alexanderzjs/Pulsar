@@ -1,26 +1,60 @@
 {
+  "protocols": {
+    "rtp": {
+      "enabled": true,
+      "port": 47984
+    },
+    "webrtc": {
+      "enabled": false,
+      "port": 47985
+    },
+    "quic": {
+      "enabled": false,
+      "port": 47986
+    },
+    "webtransport": {
+      "enabled": false,
+      "port": 47987
+    }
+  },
   "auth": {
-    "scheme":   "password",
+    "method": "password",
     "username": "admin",
     "password": "pulsar"
   },
-  "capture_backend":  "pipewire",
-  "encoder_backend":  "auto",
-  "bitrate_kbps":     8000,
-  "fps":              30,
-  "audio_enabled":    true,
-  "queue_capacity":   4,
-  "idle_fps":         5,
-  "protocols": {
-    "rtp":    { "enabled": true,  "port": 47984 },
-    "webrtc": { "enabled": false, "port": 47985 },
-    "quic":   { "enabled": false, "port": 47987 },
-    "rdp":    { "enabled": true,  "port": 3390  },
-    "vnc":    { "enabled": true,  "port": 5900  }
+  "capture": {
+    "backend": "drm_virtual"
   },
-  "scheme":           "password",
-  "username":         "admin",
-  "password":         "pulsar",
-  "rtp_enabled":      true,
-  "rtp_port":         47984
+  "preprocessor": {
+    "backend": "auto"
+  },
+  "encoder": {
+    "backend": "auto",
+    "codec": "h265",
+    "bitrate_kbps": 20000,
+    "fps": 60
+  },
+  "audio": {
+    "enabled": true,
+    "capture_backend": "pipewire",
+    "encoder": "opus",
+    "sample_rate": 48000,
+    "channels": 2,
+    "bitrate_kbps": 128
+  },
+  "pipeline": {
+    "queue_capacity": 4,
+    "drop_on_overflow": true,
+    "idle_fps": 10
+  },
+  "profiler": {
+    "enabled": true,
+    "benchmark_frames": 30,
+    "cache_result": true,
+    "cache_ttl_seconds": 3600
+  },
+  "logging": {
+    "level": "info",
+    "output": "stdout"
+  }
 }

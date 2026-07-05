@@ -1,6 +1,7 @@
 #include "factory.h"
 #include "config_parser.h"
 #include "server_profiler.h"
+#include "session_services.h"
 
 // Core
 #include "auth.h"
@@ -14,7 +15,6 @@
 #include "password_auth.h"
 
 // Capture
-#include "pipewire_capture.h"
 #include "drm_virtual_capture.h"
 
 // Preprocessors
@@ -26,8 +26,6 @@
 #include "nvenc_encoder.h"
 #include "vaapi_encoder.h"
 #include "x264_encoder.h"
-#include "rdp_encoder.h"
-#include "vnc_encoder.h"
 
 // Input
 #include "uinput_handler.h"
@@ -36,8 +34,6 @@
 #include "rtp_transport.h"
 #include "quic_transport.h"
 #include "webrtc_transport.h"
-#include "rdp_transport.h"
-#include "vnc_transport.h"
 
 // Audio
 #include "pipewire_audio_capture.h"
@@ -55,6 +51,7 @@
 #include <string>
 #include <sys/select.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
 #include <thread>
 #include <unistd.h>
 #include <unordered_map>
@@ -188,12 +185,32 @@ private:
 // ─── Build the adapter chain and run the pipeline ────────────────────────────
 
 static int run_pipeline_for_session(
-    const ServerConfig&                      cfg,
-    pulsar::transport::rtp::RtpTransport&    transport,
-    pulsar::core::ICaptureSource&            capture,
-    StdoutLogger&                            logger,
-    std::atomic<bool>&                       stop)
+    const ServerConfig&           cfg,
+    pulsar::core::ITransport&     primary_transport,
+    pulsar::core::ICaptureSource& capture,
+    StdoutLogger&                 logger,
+    std::atomic<bool>&            stop)
 {
+    // ── Optional recording sink ──────────────────────────────────────────────
+    std::unique_ptr<FileRecorder>      recorder;
+    std::unique_ptr<OutputMultiplexer> mux;
+    pulsar::core::ITransport* transport = &primary_transport;
+
+    if (cfg.recording.enabled) {
+        // mkdir recordings/ if absent
+        ::mkdir(cfg.recording.output_dir.c_str(), 0755);
+        char ts[32]{};
+        std::time_t now = std::time(nullptr);
+        std::strftime(ts, sizeof(ts), "%Y%m%d_%H%M%S", std::localtime(&now));
+        const std::string path = cfg.recording.output_dir + "pulsar_" + ts + ".h264";
+
+        recorder = std::make_unique<FileRecorder>();
+        recorder->start(path);
+        mux = std::make_unique<OutputMultiplexer>(primary_transport);
+        mux->add_sink(std::shared_ptr<pulsar::core::IPacketSink>(recorder.get(), [](auto*) {}));
+        transport = mux.get();
+        logger.log(pulsar::core::LogLevel::Info, "  recording: " + path);
+    }
     // ── Encoder selection: NVENC → VAAPI → x264 ──────────────────────────
     // Each encoder uses libavcodec as its backend internally.
     // "auto" or hardware backends: try best available hardware, then software.
@@ -239,28 +256,20 @@ static int run_pipeline_for_session(
         logger.log(pulsar::core::LogLevel::Info, "  preprocessor: direct (nullptr)");
     }
 
-    // ── Wire input callback ─────────────────────────────────────────────────
-    pulsar::input::uinput::UinputHandler input;
-    transport.set_input_callback([&input](pulsar::core::InputEvent ev) {
-        input.inject(ev);
-    });
-    if (!input.is_available()) {
+    // ── Wire input + FEC (inline, same as QUIC/WebRTC via wire_transport) ─────
+    pulsar::input::uinput::UinputHandler rtp_input;
+    if (!rtp_input.is_available())
         logger.log(pulsar::core::LogLevel::Warn,
             "  uinput: /dev/uinput not accessible (add user to 'input' group)");
-    }
-
-    // ── FEC dynamic switch via NetworkStats feedback ───────────────────────
-    // Auto-enable FEC when loss > 2 %, disable when loss drops below 0.5 %.
-    transport.set_stats_callback([&transport, &logger](pulsar::core::NetworkStats stats) {
-        const bool fec_on  = (stats.loss_rate > 0.02f);
-        const bool fec_off = (stats.loss_rate < 0.005f);
-        if (fec_on || fec_off) {
-            pulsar::core::FecParams fec;
-            fec.enabled        = fec_on;
-            fec.data_shards    = 10;
-            fec.parity_shards  = fec_on ? 2 : 0;
-            transport.set_fec_params(fec);
-        }
+    transport->set_input_callback([&rtp_input](pulsar::core::InputEvent ev) {
+        rtp_input.inject(ev);
+    });
+    transport->set_stats_callback([transport](pulsar::core::NetworkStats s) {
+        pulsar::core::FecParams fec;
+        fec.enabled       = s.loss_rate > 0.02f;
+        fec.data_shards   = 10;
+        fec.parity_shards = fec.enabled ? 2 : 0;
+        transport->set_fec_params(fec);
     });
 
     // ── Audio ─────────────────────────────────────────────────────────────
@@ -296,169 +305,207 @@ static int run_pipeline_for_session(
 
     pulsar::core::run_pipeline(
         capture, preprocessor.get(), *encoder,
-        transport, input,
+        *transport, rtp_input,
         audio_cap.get(), audio_enc.get(),
         pipe_cfg, &logger, nullptr, &stop,
-        nullptr,           // on_state_change
-        encoder_fallback); // NVENC crash → x264
+        nullptr,
+        encoder_fallback);
 
-    logger.log(pulsar::core::LogLevel::Info,
-        "pipeline stopped  video_sent=" +
-        std::to_string(transport.video_packets_sent()) +
-        "  audio_sent=" +
-        std::to_string(transport.audio_packets_sent()));
+    if (recorder) recorder->stop();
+    logger.log(pulsar::core::LogLevel::Info, "pipeline stopped");
     return 0;
 }
 
-// ─── RDP session helper ───────────────────────────────────────────────────────
-// Runs a single RDP session: binds port 3389, waits for mstsc, streams until
-// the client disconnects or g_stop is set.
-
-static int run_rdp_session(const ServerConfig& cfg, StdoutLogger& logger,
-                            std::atomic<bool>& stop) {
-    pulsar::transport::rdp::RdpTransport rdp_transport;
-    if (!rdp_transport.server_bind(cfg.protocols.rdp.port)) {
-        logger.log(pulsar::core::LogLevel::Error,
-            "rdp: bind on port " + std::to_string(cfg.protocols.rdp.port) + " failed");
-        return 1;
+// ─── pick_capture helper ─────────────────────────────────────────────────────────
+static pulsar::core::ICaptureSource& pick_capture(
+    const ServerConfig& cfg,
+    StdoutLogger& logger,
+    const std::string& proto,
+    std::unique_ptr<SyntheticCapture>& synth_cap,
+    std::unique_ptr<pulsar::capture::drm_virtual::DrmVirtualCapture>& drm_cap)
+{
+    if (cfg.capture.backend == "synthetic") {
+        if (!synth_cap) synth_cap = std::make_unique<SyntheticCapture>();
+        return *synth_cap;
     }
-    logger.log(pulsar::core::LogLevel::Info,
-        "rdp: listening on port " + std::to_string(cfg.protocols.rdp.port));
-
-    if (!rdp_transport.wait_for_client(30000)) {
-        if (!stop.load())
-            logger.log(pulsar::core::LogLevel::Warn, "rdp: no client within 30s");
-        return 1;
+    if (!drm_cap)
+        drm_cap = std::make_unique<pulsar::capture::drm_virtual::DrmVirtualCapture>();
+    if (!drm_cap->next_frame().has_value()) {
+        logger.log(pulsar::core::LogLevel::Warn,
+            proto + ": drm_virtual init failed, falling back to synthetic");
+        if (!synth_cap) synth_cap = std::make_unique<SyntheticCapture>();
+        return *synth_cap;
     }
-    logger.log(pulsar::core::LogLevel::Info, "rdp: client connected — starting stream");
-
-    // Select capture backend (rdp session).
-    SyntheticCapture synth_cap_rdp;
-    pulsar::capture::pipewire::PipeWireCapture pw_cap_rdp;
-    pulsar::capture::drm_virtual::DrmVirtualCapture drm_cap_rdp;
-    auto pick_rdp = [&]() -> pulsar::core::ICaptureSource& {
-        if (cfg.capture.backend == "synthetic")   return synth_cap_rdp;
-        if (cfg.capture.backend == "drm_virtual") return drm_cap_rdp;
-        // auto: switch to DRM virtual when no physical display available
-        if (cfg.capture.backend == "auto" &&
-            pw_cap_rdp.enumerate_displays().empty() &&
-            pulsar::capture::drm_virtual::DrmVirtualCapture::is_available())
-            return drm_cap_rdp;
-        return pw_cap_rdp;
-    };
-    pulsar::core::ICaptureSource& capture_rdp = pick_rdp();
-
-    pulsar::encoder::rdp::RdpEncoder rdp_encoder;
-
-    // Wire transport → encoder → pipeline.
-    // We re-use run_pipeline_for_session but override the encoder via a
-    // thin adapter that ignores the factory's encoder selection and uses
-    // the RDP encoder.  For simplicity we run the pipeline directly here.
-    pulsar::core::PipelineConfig pipe_cfg;
-    pipe_cfg.queue_capacity = cfg.pipeline.queue_capacity;
-    pipe_cfg.idle_fps       = cfg.pipeline.idle_fps;
-    pipe_cfg.target_fps     = cfg.encoder.fps;
-    pipe_cfg.audio_enabled  = false; // RDP audio via virtual channel (future work)
-
-    pulsar::input::uinput::UinputHandler input;
-    rdp_transport.set_input_callback([&input](pulsar::core::InputEvent ev) {
-        input.inject(ev);
-    });
-
-    // Session-local stop flag — reconnect timeout ends only this session.
-    std::atomic<bool> session_stop{false};
-    std::thread stop_watcher([&] {
-        while (!stop.load() && !session_stop.load())
-            std::this_thread::sleep_for(std::chrono::milliseconds(50));
-        session_stop.store(true);
-    });
-
-    pulsar::core::run_pipeline(
-        capture_rdp, nullptr, rdp_encoder,
-        rdp_transport, input,
-        nullptr, nullptr,
-        pipe_cfg, &logger, nullptr, &session_stop,
-        nullptr, nullptr);
-
-    session_stop.store(true);
-    stop_watcher.join();
-
-    logger.log(pulsar::core::LogLevel::Info, "rdp: session ended");
-    return 0;
+    return *drm_cap;
 }
 
-// ─── VNC session helper ───────────────────────────────────────────────────────
-
-static int run_vnc_session(const ServerConfig& cfg, StdoutLogger& logger,
-                            std::atomic<bool>& stop) {
-    pulsar::transport::vnc::VncTransport vnc_transport;
-    vnc_transport.set_password(cfg.auth.password); // VNC Auth uses server password
-
-    if (!vnc_transport.server_bind(cfg.protocols.vnc.port)) {
-        logger.log(pulsar::core::LogLevel::Error,
-            "vnc: bind on port " + std::to_string(cfg.protocols.vnc.port) + " failed");
-        return 1;
-    }
-    logger.log(pulsar::core::LogLevel::Info,
-        "vnc: listening on port " + std::to_string(cfg.protocols.vnc.port));
-
-    if (!vnc_transport.wait_for_client(30000)) {
-        if (!stop.load())
-            logger.log(pulsar::core::LogLevel::Warn, "vnc: no client within 30s");
-        return 1;
-    }
-    logger.log(pulsar::core::LogLevel::Info, "vnc: client connected — starting stream");
-
-    // Select capture backend (vnc session).
-    SyntheticCapture synth_cap_vnc;
-    pulsar::capture::pipewire::PipeWireCapture pw_cap_vnc;
-    pulsar::capture::drm_virtual::DrmVirtualCapture drm_cap_vnc;
-    auto pick_vnc = [&]() -> pulsar::core::ICaptureSource& {
-        if (cfg.capture.backend == "synthetic")   return synth_cap_vnc;
-        if (cfg.capture.backend == "drm_virtual") return drm_cap_vnc;
-        if (cfg.capture.backend == "auto" &&
-            pw_cap_vnc.enumerate_displays().empty() &&
-            pulsar::capture::drm_virtual::DrmVirtualCapture::is_available())
-            return drm_cap_vnc;
-        return pw_cap_vnc;
-    };
-    pulsar::core::ICaptureSource& capture_vnc = pick_vnc();
-
-    pulsar::encoder::vnc::VncEncoder vnc_encoder;
-
-    pulsar::core::PipelineConfig pipe_cfg;
-    pipe_cfg.queue_capacity = cfg.pipeline.queue_capacity;
-    pipe_cfg.idle_fps       = cfg.pipeline.idle_fps;
-    pipe_cfg.target_fps     = cfg.encoder.fps;
-    pipe_cfg.audio_enabled  = false;
-
-    pulsar::input::uinput::UinputHandler input;
-    vnc_transport.set_input_callback([&input](pulsar::core::InputEvent ev) {
+// ─── Session wiring: FEC auto-switch + input callback ─────────────────────────
+static void wire_transport(pulsar::core::ITransport& transport,
+                            pulsar::input::uinput::UinputHandler& input)
+{
+    transport.set_input_callback([&input](pulsar::core::InputEvent ev) {
         input.inject(ev);
     });
-
-    // Use a session-local stop flag so reconnect timeout ends this session
-    // only — it does NOT set the global g_stop and shut down the server.
-    std::atomic<bool> session_stop{false};
-    // Propagate server shutdown → session stop.
-    std::thread stop_watcher([&] {
-        while (!stop.load() && !session_stop.load())
-            std::this_thread::sleep_for(std::chrono::milliseconds(50));
-        session_stop.store(true);
+    transport.set_stats_callback([&transport](pulsar::core::NetworkStats s) {
+        pulsar::core::FecParams fec;
+        fec.enabled       = s.loss_rate > 0.02f;
+        fec.data_shards   = 10;
+        fec.parity_shards = fec.enabled ? 2 : 0;
+        transport.set_fec_params(fec);
     });
+}
 
-    pulsar::core::run_pipeline(
-        capture_vnc, nullptr, vnc_encoder,
-        vnc_transport, input,
-        nullptr, nullptr,
-        pipe_cfg, &logger, nullptr, &session_stop,
-        nullptr, nullptr);
+// ─── QUIC session loop ─────────────────────────────────────────────────────────
+static void run_quic_loop(const ServerConfig& cfg, StdoutLogger& logger,
+                           std::atomic<bool>& stop)
+{
+    while (!stop.load()) {
+        pulsar::transport::quic::QuicTransport transport;
+        logger.log(pulsar::core::LogLevel::Info,
+            "  listener: quic port=" + std::to_string(cfg.protocols.quic.port) +
+            "  waiting for client...");
+        if (!transport.server_accept(cfg.protocols.quic.port, 30000)) {
+            if (!stop.load())
+                logger.log(pulsar::core::LogLevel::Warn, "quic: no client within 30s, retrying");
+            continue;
+        }
+        logger.log(pulsar::core::LogLevel::Info, "quic: client connected");
 
-    session_stop.store(true);
-    stop_watcher.join();
+        pulsar::input::uinput::UinputHandler input;
+        if (!input.is_available())
+            logger.log(pulsar::core::LogLevel::Warn, "quic: uinput not accessible");
+        wire_transport(transport, input);
 
-    logger.log(pulsar::core::LogLevel::Info, "vnc: session ended");
-    return 0;
+        std::unique_ptr<SyntheticCapture> synth_cap;
+        std::unique_ptr<pulsar::capture::drm_virtual::DrmVirtualCapture> drm_cap;
+        auto& capture = pick_capture(cfg, logger, "quic", synth_cap, drm_cap);
+
+        std::atomic<bool> session_stop{false};
+        std::thread stop_watcher([&] {
+            while (!stop.load() && !session_stop.load())
+                std::this_thread::sleep_for(std::chrono::milliseconds(50));
+            session_stop.store(true);
+        });
+        run_pipeline_for_session(cfg, transport, capture, logger, session_stop);
+        session_stop.store(true);
+        stop_watcher.join();
+        transport.disconnect();
+        logger.log(pulsar::core::LogLevel::Info, "quic: session ended");
+    }
+}
+
+// ─── WebRTC session loop (TCP signaling) ───────────────────────────────────────
+// Minimal signaling protocol over a plain TCP socket:
+//   1. Server sends SDP offer followed by "\r\n---\r\n"
+//   2. Client sends SDP answer followed by "\r\n---\r\n"
+//   3. ICE negotiates; media flows
+static void run_webrtc_loop(const ServerConfig& cfg, StdoutLogger& logger,
+                             std::atomic<bool>& stop)
+{
+    int srv_fd = ::socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0);
+    if (srv_fd < 0) {
+        logger.log(pulsar::core::LogLevel::Error, "webrtc: signaling socket failed");
+        return;
+    }
+    int opt = 1;
+    ::setsockopt(srv_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+    sockaddr_in addr{};
+    addr.sin_family      = AF_INET;
+    addr.sin_addr.s_addr = INADDR_ANY;
+    addr.sin_port        = htons(static_cast<uint16_t>(cfg.protocols.webrtc.port));
+    if (::bind(srv_fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0) {
+        logger.log(pulsar::core::LogLevel::Error,
+            "webrtc: signaling bind failed on port " +
+            std::to_string(cfg.protocols.webrtc.port));
+        ::close(srv_fd);
+        return;
+    }
+    ::listen(srv_fd, 1);
+    logger.log(pulsar::core::LogLevel::Info,
+        "  listener: webrtc signaling port=" +
+        std::to_string(cfg.protocols.webrtc.port));
+
+    while (!stop.load()) {
+        fd_set rset; FD_ZERO(&rset); FD_SET(srv_fd, &rset);
+        timeval tv{2, 0};
+        if (::select(srv_fd + 1, &rset, nullptr, nullptr, &tv) <= 0) continue;
+
+        int client_fd = ::accept(srv_fd, nullptr, nullptr);
+        if (client_fd < 0) continue;
+        logger.log(pulsar::core::LogLevel::Info, "webrtc: signaling client connected");
+
+        pulsar::transport::webrtc::WebRtcTransport transport;
+        const std::string offer = transport.generate_sdp_offer();
+        if (offer.empty()) {
+            logger.log(pulsar::core::LogLevel::Error, "webrtc: SDP offer generation failed");
+            ::close(client_fd);
+            continue;
+        }
+        // Send offer
+        const std::string offer_msg = offer + "\r\n---\r\n";
+        ::send(client_fd, offer_msg.data(), offer_msg.size(), 0);
+
+        // Receive answer (terminated by \r\n---\r\n)
+        std::string answer_buf;
+        char buf[4096];
+        bool got_answer = false;
+        while (!stop.load()) {
+            fd_set rr; FD_ZERO(&rr); FD_SET(client_fd, &rr);
+            timeval tv2{5, 0};
+            if (::select(client_fd + 1, &rr, nullptr, nullptr, &tv2) <= 0) break;
+            ssize_t n = ::recv(client_fd, buf, sizeof(buf) - 1, 0);
+            if (n <= 0) break;
+            buf[n] = '\0';
+            answer_buf += buf;
+            const auto pos = answer_buf.find("\r\n---\r\n");
+            if (pos != std::string::npos) {
+                answer_buf = answer_buf.substr(0, pos);
+                got_answer = true;
+                break;
+            }
+        }
+        ::close(client_fd);
+
+        if (!got_answer || !transport.apply_sdp_answer(answer_buf)) {
+            logger.log(pulsar::core::LogLevel::Warn, "webrtc: SDP exchange failed");
+            continue;
+        }
+        logger.log(pulsar::core::LogLevel::Info, "webrtc: ICE negotiating...");
+
+        // Wait for ICE (up to 10 s)
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+        while (!transport.connected() && !stop.load() &&
+               std::chrono::steady_clock::now() < deadline)
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+
+        if (!transport.connected()) {
+            logger.log(pulsar::core::LogLevel::Warn, "webrtc: ICE timeout");
+            continue;
+        }
+        logger.log(pulsar::core::LogLevel::Info, "webrtc: connected — starting stream");
+
+        pulsar::input::uinput::UinputHandler input;
+        if (!input.is_available())
+            logger.log(pulsar::core::LogLevel::Warn, "webrtc: uinput not accessible");
+        wire_transport(transport, input);
+
+        std::unique_ptr<SyntheticCapture> synth_cap;
+        std::unique_ptr<pulsar::capture::drm_virtual::DrmVirtualCapture> drm_cap;
+        auto& capture = pick_capture(cfg, logger, "webrtc", synth_cap, drm_cap);
+
+        std::atomic<bool> session_stop{false};
+        std::thread stop_watcher([&] {
+            while (!stop.load() && !session_stop.load())
+                std::this_thread::sleep_for(std::chrono::milliseconds(50));
+            session_stop.store(true);
+        });
+        run_pipeline_for_session(cfg, transport, capture, logger, session_stop);
+        session_stop.store(true);
+        stop_watcher.join();
+        transport.disconnect();
+        logger.log(pulsar::core::LogLevel::Info, "webrtc: session ended");
+    }
+    ::close(srv_fd);
 }
 
 // ─── run_server ───────────────────────────────────────────────────────────────
@@ -477,12 +524,27 @@ int run_server(const ServerConfig& cfg) {
     logger.log(pulsar::core::LogLevel::Info, "  encoder:  " + cfg.encoder.backend);
     logger.log(pulsar::core::LogLevel::Info,
         "  audio:    " + std::string(cfg.audio.enabled ? "enabled" : "disabled"));
-    // Headless probe: log whether DRM virtual display would be used.
-    if (cfg.capture.backend == "auto" &&
-        pulsar::capture::drm_virtual::DrmVirtualCapture::is_available()) {
+    if (cfg.recording.enabled)
         logger.log(pulsar::core::LogLevel::Info,
-            "  headless: VKMS available \u2014 drm_virtual will activate if no physical display");
+            "  recording: enabled → " + cfg.recording.output_dir);
+
+    // ── Wake-on-LAN background listener ──────────────────────────────────
+    WakeOnLanServer wol;
+    if (cfg.wake_on_lan.enabled) {
+        wol.listen(cfg.wake_on_lan.listen_port);
+        logger.log(pulsar::core::LogLevel::Info,
+            "  wake-on-lan: listening on UDP " +
+            std::to_string(cfg.wake_on_lan.listen_port));
     }
+
+    // ── App manager ───────────────────────────────────────────────────────
+    AppManager app_mgr;
+    if (!cfg.apps.empty()) {
+        app_mgr.set_apps(cfg.apps);
+        logger.log(pulsar::core::LogLevel::Info,
+            "  apps: " + std::to_string(cfg.apps.size()) + " registered");
+    }
+
 
     // ── Profiler: dual-dimension encoder selection ─────────────────────────
     // Run at startup; cached to disk so subsequent restarts are instant.
@@ -529,68 +591,79 @@ int run_server(const ServerConfig& cfg) {
     //   ffplay -protocol_whitelist file,rtp,udp -i stream.sdp
 
     // ── Accept loop ───────────────────────────────────────────────────────
-    // RTP runs on the main thread; RDP and VNC run in background threads and
-    // loop — re-listening after each session ends or timeout.
-    std::thread rdp_th, vnc_th;
-    if (cfg.protocols.rdp.enabled) {
-        rdp_th = std::thread([&] {
-            while (!g_stop.load()) {
-                run_rdp_session(cfg, logger, g_stop);
-                if (!g_stop.load())
-                    std::this_thread::sleep_for(std::chrono::seconds(2));
-            }
-        });
-    }
-    if (cfg.protocols.vnc.enabled) {
-        vnc_th = std::thread([&] {
-            while (!g_stop.load()) {
-                run_vnc_session(cfg, logger, g_stop);
-                if (!g_stop.load())
-                    std::this_thread::sleep_for(std::chrono::seconds(2));
-            }
-        });
+    const bool rtp_enabled     = cfg.protocols.rtp.enabled;
+    const bool quic_enabled    = cfg.protocols.quic.enabled;
+    const bool webrtc_enabled  = cfg.protocols.webrtc.enabled;
+
+    if (!rtp_enabled && !quic_enabled && !webrtc_enabled) {
+        logger.log(pulsar::core::LogLevel::Error,
+            "server: no streaming protocol enabled (rtp/quic/webrtc)");
+        return 1;
     }
 
-    while (!g_stop.load()) {
+    // QUIC and WebRTC run on background threads; RTP runs on the main thread.
+    std::thread quic_th, webrtc_th;
+    if (quic_enabled)
+        quic_th = std::thread([&] { run_quic_loop(cfg, logger, g_stop); });
+    if (webrtc_enabled)
+        webrtc_th = std::thread([&] { run_webrtc_loop(cfg, logger, g_stop); });
+
+    while (rtp_enabled && !g_stop.load()) {
         pulsar::transport::rtp::RtpTransport transport;
 
-        logger.log(pulsar::core::LogLevel::Info,
-            "  listener: rtp video=" +
-            std::to_string(cfg.protocols.rtp.port) +
-            " audio=" +
-            std::to_string(cfg.protocols.rtp.port + 2) +
-            "  waiting for client UDP hello...");
-
-        // Print SDP for the client's convenience
-        transport.print_sdp();
-
-        // Bind UDP and wait for client to send a hello datagram
-        if (!transport.server_bind(cfg.protocols.rtp.port)) {
-            logger.log(pulsar::core::LogLevel::Error, "server_bind failed");
-            break;
-        }
-        if (!transport.wait_for_client(30000)) {
-            if (g_stop.load()) break;
-            logger.log(pulsar::core::LogLevel::Warn, "no client within 30s, retrying");
-            continue;
-        }
-        logger.log(pulsar::core::LogLevel::Info, "client registered — starting stream");
-
-        // Select capture backend based on config.
-        SyntheticCapture synth_cap;
-        pulsar::capture::pipewire::PipeWireCapture pw_cap;
-        pulsar::capture::drm_virtual::DrmVirtualCapture drm_cap;
-        auto pick = [&]() -> pulsar::core::ICaptureSource& {
-            if (cfg.capture.backend == "synthetic")   return synth_cap;
-            if (cfg.capture.backend == "drm_virtual") return drm_cap;
-            if (cfg.capture.backend == "auto" &&
-                pw_cap.enumerate_displays().empty() &&
-                pulsar::capture::drm_virtual::DrmVirtualCapture::is_available()) {
-                logger.log(pulsar::core::LogLevel::Info,
-                    "  capture: no physical display — switching to drm_virtual (VKMS)");
-                return drm_cap;
+        // ── push_to mode: skip hello, push directly to a known client IP ──────
+        if (!cfg.protocols.rtp.push_to.empty()) {
+            const std::string dest = cfg.protocols.rtp.push_to + ":" +
+                                     std::to_string(cfg.protocols.rtp.port);
+            logger.log(pulsar::core::LogLevel::Info,
+                "  rtp: push mode → " + dest);
+            if (!transport.connect(dest)) {
+                logger.log(pulsar::core::LogLevel::Error, "rtp: connect failed");
+                std::this_thread::sleep_for(std::chrono::seconds(2));
+                continue;
             }
-            return pw_cap;
+        } else {
+            // ── hello mode: wait for client UDP registration ──────────────────
+            logger.log(pulsar::core::LogLevel::Info,
+                "  listener: rtp video=" +
+                std::to_string(cfg.protocols.rtp.port) +
+                " audio=" +
+                std::to_string(cfg.protocols.rtp.port + 2) +
+                "  waiting for client UDP hello...");
+            transport.print_sdp();
+
+            if (!transport.server_bind(cfg.protocols.rtp.port)) {
+                logger.log(pulsar::core::LogLevel::Error,
+                    "rtp: server_bind failed, retrying in 2s");
+                std::this_thread::sleep_for(std::chrono::seconds(2));
+                continue;
+            }
+            if (!transport.wait_for_client(30000)) {
+                if (g_stop.load()) break;
+                logger.log(pulsar::core::LogLevel::Warn, "no client within 30s, retrying");
+                continue;
+            }
+        }
+        logger.log(pulsar::core::LogLevel::Info, "rtp: client ready — starting stream");
+
+        // Select capture backend based on config (lazy construction).
+        std::unique_ptr<SyntheticCapture> synth_cap;
+        std::unique_ptr<pulsar::capture::drm_virtual::DrmVirtualCapture> drm_cap;
+        auto pick = [&]() -> pulsar::core::ICaptureSource& {
+            if (cfg.capture.backend == "synthetic") {
+                if (!synth_cap) synth_cap = std::make_unique<SyntheticCapture>();
+                return *synth_cap;
+            }
+            // default: drm_virtual with synthetic fallback
+            if (!drm_cap)
+                drm_cap = std::make_unique<pulsar::capture::drm_virtual::DrmVirtualCapture>();
+            if (!drm_cap->next_frame().has_value()) {
+                logger.log(pulsar::core::LogLevel::Warn,
+                    "rtp: drm_virtual init failed (DRM master busy?), falling back to synthetic");
+                if (!synth_cap) synth_cap = std::make_unique<SyntheticCapture>();
+                return *synth_cap;
+            }
+            return *drm_cap;
         };
         pulsar::core::ICaptureSource& capture = pick();
 
@@ -602,12 +675,19 @@ int run_server(const ServerConfig& cfg) {
         });
 
         run_pipeline_for_session(cfg, transport, capture, logger, session_stop);
-        g_stop.store(true);     // one session per process for MVP
+        // No g_stop.store(true): loop back and accept the next client.
+        session_stop.store(true);
         stop_watcher.join();
     }
 
-    if (rdp_th.joinable()) rdp_th.join();
-    if (vnc_th.joinable()) vnc_th.join();
+    // If only QUIC/WebRTC are enabled, keep alive until stop signal.
+    if (!rtp_enabled) {
+        while (!g_stop.load())
+            std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    }
+
+    if (quic_th.joinable())   quic_th.join();
+    if (webrtc_th.joinable()) webrtc_th.join();
 
     logger.log(pulsar::core::LogLevel::Info, "server: shutdown");
     return 0;

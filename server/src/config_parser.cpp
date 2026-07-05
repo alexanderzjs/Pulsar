@@ -68,18 +68,18 @@ std::optional<ServerConfig> load_config(const std::string& path,
         auto port_key = name + "_port";
         if (j.contains(en_key))   ep.enabled = j[en_key].get<bool>();
         if (j.contains(port_key)) ep.port     = j[port_key].get<int>();
-        // Nested: protocols.rtp.{enabled,port}
+        // Nested: protocols.rtp.{enabled,port,push_to}
         if (j.contains("protocols") && j["protocols"].contains(name)) {
             auto& p = j["protocols"][name];
             if (p.contains("enabled")) ep.enabled = p["enabled"].get<bool>();
             if (p.contains("port"))    ep.port     = p["port"].get<int>();
+            if (p.contains("push_to")) ep.push_to  = p["push_to"].get<std::string>();
         }
     };
-    load_proto("rtp",    cfg.protocols.rtp);
-    load_proto("webrtc", cfg.protocols.webrtc);
-    load_proto("quic",   cfg.protocols.quic);
-    load_proto("rdp",    cfg.protocols.rdp);
-    load_proto("vnc",    cfg.protocols.vnc);
+    load_proto("rtp",          cfg.protocols.rtp);
+    load_proto("webrtc",       cfg.protocols.webrtc);
+    load_proto("quic",         cfg.protocols.quic);
+    load_proto("webtransport", cfg.protocols.webtransport);
 
     // Pipeline
     if (j.contains("queue_capacity")) cfg.pipeline.queue_capacity = j["queue_capacity"].get<int>();
@@ -100,6 +100,42 @@ std::optional<ServerConfig> load_config(const std::string& path,
         if (p.contains("benchmark_frames")) cfg.profiler.benchmark_frames = p["benchmark_frames"].get<int>();
         if (p.contains("cache_result"))     cfg.profiler.cache_result     = p["cache_result"].get<bool>();
         if (p.contains("cache_ttl_seconds"))cfg.profiler.cache_ttl_seconds= p["cache_ttl_seconds"].get<int>();
+    }
+
+    // Recording
+    if (j.contains("recording")) {
+        auto& r = j["recording"];
+        if (r.contains("enabled"))              cfg.recording.enabled             = r["enabled"].get<bool>();
+        if (r.contains("output_dir"))           cfg.recording.output_dir          = r["output_dir"].get<std::string>();
+        if (r.contains("max_duration_minutes")) cfg.recording.max_duration_minutes= r["max_duration_minutes"].get<int>();
+    }
+
+    // Wake-on-LAN
+    if (j.contains("wake_on_lan")) {
+        auto& w = j["wake_on_lan"];
+        if (w.contains("enabled"))           cfg.wake_on_lan.enabled           = w["enabled"].get<bool>();
+        if (w.contains("listen_port"))       cfg.wake_on_lan.listen_port       = w["listen_port"].get<int>();
+        if (w.contains("broadcast_address")) cfg.wake_on_lan.broadcast_address = w["broadcast_address"].get<std::string>();
+    }
+
+    // Shared session
+    if (j.contains("shared_session")) {
+        auto& s = j["shared_session"];
+        if (s.contains("enabled"))     cfg.shared_session.enabled     = s["enabled"].get<bool>();
+        if (s.contains("max_clients")) cfg.shared_session.max_clients = s["max_clients"].get<int>();
+    }
+
+    // Apps
+    if (j.contains("apps") && j["apps"].is_array()) {
+        for (const auto& a : j["apps"]) {
+            AppEntry e;
+            if (a.contains("id"))          e.id          = a["id"].get<std::string>();
+            if (a.contains("name"))        e.name        = a["name"].get<std::string>();
+            if (a.contains("executable"))  e.executable  = a["executable"].get<std::string>();
+            if (a.contains("args"))        e.args        = a["args"].get<std::string>();
+            if (a.contains("working_dir")) e.working_dir = a["working_dir"].get<std::string>();
+            if (!e.id.empty()) cfg.apps.push_back(std::move(e));
+        }
     }
 
     return cfg;

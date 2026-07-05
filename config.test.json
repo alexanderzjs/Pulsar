@@ -1,0 +1,66 @@
+{
+  "protocols": {
+    "rtp": {
+      "enabled": true,
+      "port": 47984,
+      "push_to": ""
+    },
+    "webrtc": {
+      "enabled": false,
+      "port": 47985
+    },
+    "quic": {
+      "enabled": false,
+      "port": 47986
+    },
+    "webtransport": {
+      "enabled": false,
+      "port": 47987
+    }
+  },
+  "auth": {
+    "method": "password",
+    "username": "admin",
+    "password": "pulsar"
+  },
+  "capture": {
+    "backend": "synthetic"
+  },
+  "preprocessor": {
+    "backend": "auto"
+  },
+  "encoder": {
+    "backend": "auto",
+    "codec": "h265",
+    "bitrate_kbps": 20000,
+    "fps": 60
+  },
+  "audio": {
+    "enabled": true,
+    "capture_backend": "pipewire",
+    "encoder": "opus",
+    "sample_rate": 48000,
+    "channels": 2,
+    "bitrate_kbps": 128
+  },
+  "pipeline": {
+    "queue_capacity": 4,
+    "drop_on_overflow": true,
+    "idle_fps": 10
+  },
+  "profiler": {
+    "enabled": true,
+    "benchmark_frames": 30,
+    "cache_result": true,
+    "cache_ttl_seconds": 3600
+  },
+  "logging": {
+    "level": "info",
+    "output": "stdout"
+  },
+  "recording": {
+    "enabled": true,
+    "output_dir": "recordings/",
+    "max_duration_minutes": 5
+  }
+}

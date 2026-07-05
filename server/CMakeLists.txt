@@ -3,6 +3,7 @@ add_executable(pulsar_server
     src/factory.cpp
     src/config_parser.cpp
     src/profiler.cpp
+    src/session_services.cpp
 )
 
 target_include_directories(pulsar_server
@@ -13,7 +14,6 @@ target_include_directories(pulsar_server
 target_link_libraries(pulsar_server
     PRIVATE
         pulsar_core
-        capture_pipewire
         capture_drm_virtual
         preprocessor_cpu
         preprocessor_dmabuf
@@ -21,13 +21,9 @@ target_link_libraries(pulsar_server
         encoder_nvenc
         encoder_vaapi
         encoder_x264
-        encoder_rdp
-        encoder_vnc
         transport_rtp
         transport_quic
         transport_webrtc
-        transport_rdp
-        transport_vnc
         input_uinput
         audio_capture_pipewire
         audio_encoder_opus
