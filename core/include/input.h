@@ -20,7 +20,7 @@ struct HapticCommand;  // defined in transport.h
 struct InputEvent {
     enum class Type {
         KeyDown, KeyUp,
-        MouseMove, MouseButton, MouseWheel,
+        MouseMove, MouseAbsolute, MouseButton, MouseWheel,
         GamepadButton, GamepadAxis,
         TouchBegin, TouchUpdate, TouchEnd,
         ClipboardText,

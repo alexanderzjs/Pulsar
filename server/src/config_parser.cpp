@@ -39,6 +39,37 @@ std::optional<ServerConfig> load_config(const std::string& path,
     if (j.contains("capture_backend")) cfg.capture.backend = j["capture_backend"].get<std::string>();
     if (j.contains("capture") && j["capture"].contains("backend"))
         cfg.capture.backend = j["capture"]["backend"].get<std::string>();
+    if (j.contains("capture") && j["capture"].contains("xcb_display"))
+        cfg.capture.xcb_display = j["capture"]["xcb_display"].get<std::string>();
+    if (j.contains("capture") && j["capture"].contains("xcb_xauthority"))
+        cfg.capture.xcb_xauthority = j["capture"]["xcb_xauthority"].get<std::string>();
+    if (j.contains("capture") && j["capture"].contains("dbus_address"))
+        cfg.capture.dbus_address = j["capture"]["dbus_address"].get<std::string>();
+    if (j.contains("capture") && j["capture"].contains("xdg_runtime_dir"))
+        cfg.capture.xdg_runtime_dir = j["capture"]["xdg_runtime_dir"].get<std::string>();
+
+    // Compositor host
+    if (j.contains("compositor")) {
+        auto& c = j["compositor"];
+        if (c.contains("enabled")) cfg.compositor.enabled = c["enabled"].get<bool>();
+        if (c.contains("self_host_session")) cfg.compositor.self_host_session = c["self_host_session"].get<bool>();
+        if (c.contains("start_pipewire_pulse")) cfg.compositor.start_pipewire_pulse = c["start_pipewire_pulse"].get<bool>();
+        if (c.contains("command")) cfg.compositor.command = c["command"].get<std::string>();
+        if (c.contains("runtime_dir")) cfg.compositor.runtime_dir = c["runtime_dir"].get<std::string>();
+        if (c.contains("wayland_display")) cfg.compositor.wayland_display = c["wayland_display"].get<std::string>();
+        if (c.contains("xdg_seat")) cfg.compositor.xdg_seat = c["xdg_seat"].get<std::string>();
+        if (c.contains("startup_timeout_ms")) cfg.compositor.startup_timeout_ms = c["startup_timeout_ms"].get<int>();
+        if (c.contains("args") && c["args"].is_array()) {
+            cfg.compositor.args.clear();
+            for (const auto& arg : c["args"])
+                cfg.compositor.args.push_back(arg.get<std::string>());
+        }
+        if (c.contains("autostart") && c["autostart"].is_array()) {
+            cfg.compositor.autostart.clear();
+            for (const auto& app : c["autostart"])
+                cfg.compositor.autostart.push_back(app.get<std::string>());
+        }
+    }
 
     // Encoder
     if (j.contains("encoder_backend")) cfg.encoder.backend      = j["encoder_backend"].get<std::string>();

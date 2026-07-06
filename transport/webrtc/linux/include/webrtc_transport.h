@@ -46,22 +46,26 @@ public:
 
     bool connected() const;
 
-    // Generate and return an SDP offer (sent to the client for ICE negotiation).
+    // Browser-offer flow:
+    //   1. Browser sends SDP offer  → call handle_offer_and_answer(offer)
+    //   2. Returns SDP answer to send back to browser
+    //   3. ICE + DTLS negotiate automatically
+    std::string handle_offer_and_answer(const std::string& browser_offer);
+
+    // Generate and return an SDP offer (kept for interface compatibility).
     std::string generate_sdp_offer();
     // Process an SDP answer received from the client.
     bool apply_sdp_answer(const std::string& sdp);
 
 private:
-    struct Impl;
-    std::unique_ptr<Impl> impl_;
-
     std::function<void(pulsar::core::NetworkStats)>   stats_cb_;
     std::function<void(pulsar::core::AudioFrame)>     mic_cb_;
-
     pulsar::core::FecParams fec_params_{};
     mutable std::mutex      send_mtx_;
 
-public:  // accessed by static GLib callbacks
+public:  // accessed by static GLib callbacks and DTLS thread
+    struct Impl;
+    std::unique_ptr<Impl>   impl_;
     std::atomic<bool>       connected_{false};
     std::function<void(pulsar::core::TransportEvent)> event_cb_;
     std::function<void(pulsar::core::InputEvent)>     input_cb_;

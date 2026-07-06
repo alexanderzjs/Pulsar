@@ -1,11 +1,11 @@
 {
   "protocols": {
     "rtp": {
-      "enabled": true,
+      "enabled": false,
       "port": 47984
     },
     "webrtc": {
-      "enabled": false,
+      "enabled": true,
       "port": 47985
     },
     "quic": {
@@ -24,6 +24,18 @@
   },
   "capture": {
     "backend": "pipewire"
+  },
+  "compositor": {
+    "enabled": false,
+    "self_host_session": false,
+    "start_pipewire_pulse": false,
+    "command": "",
+    "args": [],
+    "autostart": [],
+    "runtime_dir": "",
+    "wayland_display": "wayland-0",
+    "xdg_seat": "seat0",
+    "startup_timeout_ms": 5000
   },
   "preprocessor": {
     "backend": "auto"

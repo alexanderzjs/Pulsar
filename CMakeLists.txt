@@ -18,6 +18,8 @@ if (UNIX AND NOT APPLE)
     pkg_check_modules(VAAPI    REQUIRED IMPORTED_TARGET libva libva-drm libdrm)
 
     add_subdirectory(video/capture/linux/drm_virtual)
+    add_subdirectory(video/capture/linux/xcb)
+    add_subdirectory(video/capture/linux/pipewire)
     add_subdirectory(video/preprocessor/linux/dmabuf)
     add_subdirectory(video/preprocessor/linux/gpu)
     add_subdirectory(video/encoder/vaapi/linux)

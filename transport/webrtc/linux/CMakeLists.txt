@@ -1,6 +1,8 @@
 find_package(PkgConfig REQUIRED)
-pkg_check_modules(NICE REQUIRED IMPORTED_TARGET nice)
-pkg_check_modules(GLIB REQUIRED IMPORTED_TARGET glib-2.0 gobject-2.0)
+pkg_check_modules(NICE    REQUIRED IMPORTED_TARGET nice)
+pkg_check_modules(GLIB    REQUIRED IMPORTED_TARGET glib-2.0 gobject-2.0)
+pkg_check_modules(OPENSSL REQUIRED IMPORTED_TARGET openssl)
+pkg_check_modules(SRTP2   REQUIRED IMPORTED_TARGET libsrtp2)
 
 add_library(transport_webrtc STATIC
     src/webrtc_transport.cpp
@@ -16,4 +18,6 @@ target_link_libraries(transport_webrtc
         pulsar_core
         PkgConfig::NICE
         PkgConfig::GLIB
+        PkgConfig::OPENSSL
+        PkgConfig::SRTP2
 )

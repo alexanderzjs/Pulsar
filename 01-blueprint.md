@@ -62,7 +62,8 @@ flowchart LR
 
 | 实现 | 平台 | 特点 |
 |------|------|------|
-| `DrmVirtualCapture` | Linux | DRM/KMS 虚拟显示；dmabuf fd 直传 encoder，不经 CPU；支持 dirty_rects |
+| `PipeWireCapture` | Linux | PipeWire ScreenCast/RemoteDesktop；server 自举虚拟显示器；**headless 首选**，不依赖物理桌面登录；GNOME/KDE Wayland 下开箱可用 |
+| `DrmVirtualCapture` | Linux | DRM/KMS 虚拟显示；dmabuf fd 直传 encoder，不经 CPU；支持 dirty_rects；适合裸金属/GPU 直通场景 |
 | `IDDVirtualDisplay` | Windows | IDD 虚拟显示；D3D11 纹理句柄直传，不经 CPU |
 | `CGVirtualDisplay` | macOS | CGVirtualDisplay API；IOSurface 句柄直传，不经 CPU |
 
@@ -117,9 +118,11 @@ flowchart LR
 
 | 实现 | 平台 | 特点 |
 |------|------|------|
-| `UinputHandler` | Linux | /dev/uinput，键鼠/手柄/触摸全支持 |
+| `UinputHandler` | Linux | /dev/uinput，键鼠/手柄/触摸全支持；Wayland 下需要 seat-aware 设备命名（绑定 server 托管的虚拟会话 seat，headless 下即服务器自启的虚拟 compositor 所在 seat），独立相对/绝对鼠标设备与 udev seat 规则 |
 | `Win32InputHandler` | Windows | SendInput + ViGEm 虚拟手柄 |
 | `IOKitInputHandler` | macOS | IOKit CGEvent |
+
+> Linux / Wayland 说明：要让 compositor 接受注入输入，虚拟输入设备需要落到 server 托管的虚拟会话 seat（headless 下即服务器自启的虚拟 compositor/Wayland session 所在 seat，而不是要求实体用户已登录）。实现上会参考 Sunshine 的做法，按 `XDG_SEAT` 给设备名加后缀，并通过 udev 规则把这些设备标记到对应 seat。Linux 侧会分离相对鼠标和绝对鼠标设备，分别覆盖常规拖动和绝对定位。
 
 #### 各平台最优链路
 
@@ -127,12 +130,17 @@ Factory 自动选择；`config.json` 可强制指定各阶段 backend。
 
 | 平台 | Capture | Preprocessor | Encoder | Transport |
 |------|---------|-------------|---------|-----------|
-| Linux 最优 | DrmVirtualCapture | DMABUFImporter | VaapiEncoder / NvencEncoder | QUIC（原生客户端）/ WebRTC（浏览器）|
+| Linux 最优（headless，默认） | PipeWireCapture | DMABUFImporter / CPUPreprocessor | VaapiEncoder / NvencEncoder | QUIC（原生客户端）/ WebRTC（浏览器）|
+| Linux 最优（裸金属/GPU 直通） | DrmVirtualCapture | DMABUFImporter | VaapiEncoder / NvencEncoder | QUIC（原生客户端）/ WebRTC（浏览器）|
 | Windows 最优 | IDDVirtualDisplay | GPUPreprocessor | NvencEncoder / AMFEncoder | QUIC（原生客户端）/ WebRTC（浏览器）|
 | macOS 最优 | CGVirtualDisplay | GPUPreprocessor | VideoToolboxEncoder | QUIC（原生客户端）/ WebRTC（浏览器）|
 | 软件兜底 | 任意 | CPUPreprocessor | X264Encoder | RTP |
 
 > **Pipeline 级优化**：SPSC 无锁队列（相邻阶段零竞争）、drop_on_overflow（背压保帧率）、idle_fps 降速（画面静止时降低采集率节省资源）、Transport FEC 丢包率 >2% 时自动开启。
+
+> **Headless 语义**：Pulsar 的 server 默认按 headless 方式运行，也就是不依赖实体用户登录到本机物理桌面；但它仍然必须托管一个可被采集/注入的虚拟会话（虚拟 compositor / 虚拟显示 / 虚拟桌面）。如果管理员临时登录了图形环境，只是作为调试或运维手段，不改变 server 的 headless 目标。
+
+> **共享会话**：直播或多观众场景共享的是 server 侧托管的同一个虚拟会话，而不是要求每个观众各自登录一个物理桌面会话。Session manager / shared_session 负责的是网络会话和输入归属，虚拟桌面由 server 统一提供。
 
 ---
 
@@ -184,6 +192,7 @@ Pulsar/
 │
 ├── video/
 │   ├── capture/
+│   │   ├── linux/pipewire/              # PipeWire ScreenCast  [system: libpipewire-0.3]  ← headless 默认
 │   │   ├── linux/drm_virtual/           # DRM/KMS 虚拟显示      [system: libdrm]
 │   │   ├── windows/virtual_display/     # IDD 虚拟显示         [system: wdf/idd]
 │   │   └── macos/cgvirtual/             # CGVirtualDisplay     [system: framework]
@@ -242,6 +251,7 @@ Pulsar/
 
 | 模块 | 依赖库 | 链接方式 | 平台 |
 |------|-------|---------|------|
+| `video/capture/linux/pipewire/` | libpipewire-0.3 | `[system]` pkg-config | Linux |
 | `video/capture/linux/drm_virtual/` | libdrm | `[system]` pkg-config | Linux |
 | `video/capture/windows/virtual_display/` | WDF / IDD | `[system]` | Windows |
 | `video/preprocessor/linux/dmabuf/` | libdrm | `[system]` pkg-config | Linux |

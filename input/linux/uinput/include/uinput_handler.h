@@ -2,6 +2,8 @@
 
 #include "input.h"
 
+#include <unordered_map>
+
 namespace pulsar::input::uinput {
 
 // Linux uinput input injector.
@@ -20,11 +22,14 @@ public:
     size_t injected_events() const;
 
 private:
-    int    fd_              = -1;
+    int    keyboard_fd_     = -1;
+    int    mouse_fd_        = -1;
+    int    absolute_mouse_fd_ = -1;
     size_t injected_events_ = 0;
+    bool   has_abs_         = false;
     int    last_abs_x_      = 0;
     int    last_abs_y_      = 0;
-    bool   has_abs_pointer_ = false;
+    std::unordered_map<int, int> gamepad_fds_;
     std::function<void(pulsar::core::HapticCommand)> haptic_cb_;
 };
 

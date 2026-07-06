@@ -3,6 +3,7 @@ add_executable(pulsar_server
     src/factory.cpp
     src/config_parser.cpp
     src/profiler.cpp
+    src/session_detect.cpp
     src/session_services.cpp
 )
 
@@ -15,6 +16,8 @@ target_link_libraries(pulsar_server
     PRIVATE
         pulsar_core
         capture_drm_virtual
+        capture_xcb
+        capture_pipewire_video
         preprocessor_cpu
         preprocessor_dmabuf
         preprocessor_gpu

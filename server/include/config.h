@@ -28,7 +28,24 @@ struct AuthConfig {
 };
 
 struct CaptureConfig {
-    std::string backend = "drm_virtual";  // "drm_virtual" | "synthetic"
+    std::string backend       = "drm_virtual";  // "drm_virtual" | "xcb" | "pipewire" | "synthetic"
+    std::string xcb_display   = ":99";          // X11 display for xcb backend
+    std::string xcb_xauthority;                 // XAUTHORITY file (optional, for Xwayland)
+    std::string dbus_address;                   // D-Bus session bus address (pipewire backend)
+    std::string xdg_runtime_dir;                // XDG_RUNTIME_DIR (pipewire backend)
+};
+
+struct CompositorConfig {
+    bool        enabled          = false;
+    bool        self_host_session = true;       // launch an isolated session bus + PipeWire stack
+    bool        start_pipewire_pulse = false;   // optional Pulse compatibility daemon
+    std::string command;                       // compositor binary, e.g. weston
+    std::vector<std::string> args;             // argv[1..]
+    std::vector<std::string> autostart;         // desktop apps to launch after the shell starts
+    std::string runtime_dir;                   // optional runtime dir override
+    std::string wayland_display  = "wayland-0";
+    std::string xdg_seat         = "seat0";
+    int         startup_timeout_ms = 5000;
 };
 
 struct EncoderConfig {
@@ -84,6 +101,7 @@ struct SharedSessionConfig {
 struct ServerConfig {
     AuthConfig          auth{};
     CaptureConfig       capture{};
+    CompositorConfig    compositor{};
     EncoderConfig       encoder{};
     AudioConfig         audio{};
     ProtocolsConfig     protocols{};

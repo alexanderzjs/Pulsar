@@ -159,6 +159,15 @@ bool NvencEncoder::open_context(int w, int h) {
     cfg.rcParams.rateControlMode = NV_ENC_PARAMS_RC_CBR;
     cfg.rcParams.averageBitRate  = static_cast<uint32_t>(params_.bitrate_kbps) * 1000u;
     cfg.rcParams.maxBitRate      = static_cast<uint32_t>(params_.bitrate_kbps) * 1200u;
+    // Always include SPS+PPS with every IDR so reconnecting browsers can
+    // reconfigure their VideoDecoder without waiting for the next GOP start.
+    if (!use_hevc_) {
+        cfg.encodeCodecConfig.h264Config.repeatSPSPPS = 1;
+        cfg.encodeCodecConfig.h264Config.idrPeriod    = cfg.gopLength;
+    } else {
+        cfg.encodeCodecConfig.hevcConfig.repeatSPSPPS = 1;
+        cfg.encodeCodecConfig.hevcConfig.idrPeriod    = cfg.gopLength;
+    }
 
     NV_ENC_INITIALIZE_PARAMS ip{};
     ip.version       = NV_ENC_INITIALIZE_PARAMS_VER;

@@ -71,6 +71,17 @@ bool run_pipeline(
     // ── Wire encoder → Q2 ─────────────────────────────────────────────────────
     auto wire_encoder = [&](IEncoder& enc) {
         enc.set_encoded_callback([&](EncodedPacket pkt) {
+            static thread_local int logged = 0;
+            if (logged < 12 || pkt.is_keyframe) {
+                if (logger) {
+                    logger->log(LogLevel::Debug,
+                                std::string("pipeline: encoded packet size=") +
+                                std::to_string(pkt.buffer ? pkt.buffer->size() : 0) +
+                                " key=" + (pkt.is_keyframe ? "1" : "0") +
+                                " pts_us=" + std::to_string(pkt.pts_us));
+                }
+                ++logged;
+            }
             latest_video_pts_us.store(pkt.pts_us, std::memory_order_relaxed);
             q2.try_push(std::move(pkt), 16);
         });
@@ -87,9 +98,20 @@ bool run_pipeline(
     // ── Suspend/resume flag (set by transport Disconnected) ───────────────────
     std::atomic<bool> suspended{false};
     std::atomic<steady_clock::time_point::duration::rep> suspend_since{0};
+    // ── Force-keyframe flag (set on startup / Ready / recovery) ──────────────
+    std::atomic<bool> force_next_keyframe{true}; // always send IDR at startup
 
     // ── Transport event callback ───────────────────────────────────────────────
     transport.set_event_callback([&](TransportEvent ev) {
+        if (logger) {
+            const char* name = "Unknown";
+            switch (ev) {
+            case TransportEvent::Ready:        name = "Ready"; break;
+            case TransportEvent::Disconnected: name = "Disconnected"; break;
+            case TransportEvent::Congested:    name = "Congested"; break;
+            }
+            logger->log(LogLevel::Debug, std::string("pipeline: transport event → ") + name);
+        }
         if (ev == TransportEvent::Disconnected) {
             if (state() == PipelineState::Running) {
                 suspended.store(true, std::memory_order_release);
@@ -99,6 +121,8 @@ bool run_pipeline(
                 go(PipelineState::Suspended);
             }
         } else if (ev == TransportEvent::Ready) {
+            if (logger) logger->log(LogLevel::Info, "pipeline: ready → forcing next keyframe");
+            force_next_keyframe.store(true, std::memory_order_relaxed);
             if (state() == PipelineState::Suspended) {
                 go(PipelineState::Recovering);
                 suspended.store(false, std::memory_order_release);
@@ -121,9 +145,6 @@ bool run_pipeline(
             if (logger) logger->log(LogLevel::Info, "pipeline: resolution changed");
         }
     });
-
-    // ── Force-keyframe flag (set on Recovering or Congested) ─────────────────
-    std::atomic<bool> force_next_keyframe{true}; // always send IDR at startup
 
     go(PipelineState::Running);
 
@@ -213,6 +234,9 @@ bool run_pipeline(
 
             const bool fkf = force_next_keyframe.exchange(false, std::memory_order_relaxed);
             const SubmitFlags flags = fkf ? SubmitFlags::ForceKeyframe : SubmitFlags::None;
+            if (fkf && logger) {
+                logger->log(LogLevel::Debug, "pipeline: submitting forced keyframe");
+            }
 
             bool ok = true;
             try {
@@ -261,7 +285,20 @@ bool run_pipeline(
                 continue;
             }
             EncodedPacket pkt;
-            if (q2.try_pop(pkt, 20)) transport.send(std::move(pkt));
+            if (q2.try_pop(pkt, 20)) {
+                static thread_local int logged = 0;
+                if (logged < 16 || pkt.is_keyframe) {
+                    if (logger) {
+                        logger->log(LogLevel::Debug,
+                                    std::string("pipeline: send thread popped packet size=") +
+                                    std::to_string(pkt.buffer ? pkt.buffer->size() : 0) +
+                                    " key=" + (pkt.is_keyframe ? "1" : "0") +
+                                    " pts_us=" + std::to_string(pkt.pts_us));
+                    }
+                    ++logged;
+                }
+                transport.send(std::move(pkt));
+            }
         }
     });
 

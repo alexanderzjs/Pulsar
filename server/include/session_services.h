@@ -9,6 +9,7 @@
 #include "multiplexer.h"
 #include "recorder.h"
 #include "shared_session.h"
+#include "session_detect.h"
 #include "transport.h"
 #include "wake_on_lan.h"
 
@@ -101,6 +102,42 @@ private:
     int  fd_ = -1;
     std::atomic<bool> running_{false};
     std::thread thread_;
+};
+
+// ─── CompositorHost ──────────────────────────────────────────────────────────
+// Starts an external Wayland compositor process and tracks its session env.
+class CompositorHost final {
+public:
+    CompositorHost(const CompositorConfig& compositor, const CaptureConfig& capture);
+    ~CompositorHost();
+
+    bool start();
+    void stop();
+    bool is_running() const;
+    pulsar::server::WaylandSessionInfo session_info() const;
+    bool launch_autostart_apps();
+
+private:
+    bool wait_for_socket() const;
+    bool wait_for_path(const std::string& path) const;
+    bool launch_session_bus();
+    bool launch_pipewire_stack();
+    bool launch_compositor();
+    pid_t spawn_process(const std::string& label,
+                        const std::vector<std::string>& argv,
+                        const std::vector<std::pair<std::string, std::string>>& env) const;
+    void kill_process(pid_t pid, const std::string& label);
+
+    CompositorConfig config_;
+    CaptureConfig capture_;
+    pid_t pid_ = -1;
+    pid_t dbus_pid_ = -1;
+    pid_t pipewire_pid_ = -1;
+    pid_t wireplumber_pid_ = -1;
+    pid_t pipewire_pulse_pid_ = -1;
+    std::string dbus_address_;
+    std::string runtime_dir_;
+    std::string socket_name_;
 };
 
 // ─── AppManager ───────────────────────────────────────────────────────────────

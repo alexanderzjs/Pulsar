@@ -154,7 +154,11 @@ ITransport 继承 IPacketSink，可直接注册到 IOutputMultiplexer。
 | `set_clipboard(text)` | `void` | 剪贴板同步 |
 | `get_clipboard()` | `string` | — |
 
-`InputEvent::Type`：KeyDown / KeyUp / MouseMove / MouseButton / MouseWheel / GamepadButton / GamepadAxis / TouchBegin / TouchUpdate / TouchEnd / ClipboardText
+`InputEvent::Type`：KeyDown / KeyUp / MouseMove / MouseAbsolute / MouseButton / MouseWheel / GamepadButton / GamepadAxis / TouchBegin / TouchUpdate / TouchEnd / ClipboardText
+
+Linux uinput now exposes a dedicated absolute pointer device for `MouseAbsolute` and falls back to relative motion only when that device cannot be created.
+
+Linux / Wayland multiseat note: the virtual input device names should include `XDG_SEAT` when it is not `seat0`, and a udev rule should tag those devices with the matching seat. In headless mode, `XDG_SEAT` refers to the seat of the server-hosted virtual session (e.g. a systemd-started Wayland compositor), **not** a physically logged-in user session. A uinput write can succeed while the compositor still ignores the event if the seat does not match.
 
 ### IOutputMultiplexer（`core/include/multiplexer.h`）
 
@@ -276,6 +280,10 @@ PTT / VAD 模式通过 `voice_chat.mode` 配置（"always" / "ptt" / "vad"）。
 | `ICapabilityNegotiator` | negotiation.h | `negotiate(ClientCapabilities, ServerProfile, QosPolicy)` → `NegotiatedParams` |
 
 `AdapterCapabilities` 关键字段：supports_dmabuf / supports_gpu_preprocessing / supports_dirty_rect / supports_hdr / supports_headless
+
+`supports_headless` 的含义：server 可以在没有实体用户登录本机物理桌面的情况下运行；它不表示“没有会话”。相反，headless server 仍然需要托管一个可被捕获和注入输入的虚拟会话（虚拟 compositor / 虚拟显示 / 虚拟桌面），并将观众连接到这个 server 侧会话上。管理员可以临时登录图形环境做排障，但这只是运维入口，不是 headless 的前提。
+
+`shared_session` 的含义：多个网络客户端共享同一个 server 侧会话。共享的是输入归属和流会话，不是要求每个客户端对应一个本地桌面登录实例。
 
 ---
 
